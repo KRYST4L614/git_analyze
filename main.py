@@ -9,7 +9,7 @@ from threading import Lock
 
 
 class GitHubAnalyzer:
-    def __init__(self, token=None, max_workers=5):
+    def __init__(self, token=None, max_workers=50):
         self.base_url = "https://api.github.com"
         self.headers = {
             "Accept": "application/vnd.github.v3+json",
@@ -337,7 +337,7 @@ class GitHubAnalyzer:
         while len(repos) < count:
             url = f"{self.base_url}/search/repositories"
             params = {
-                "q": "stars:>1000",
+                "q": "stars:1000..44000 -language:HTML -language:TypeScript -language:Markdown",
                 "sort": "stars",
                 "order": "desc",
                 "page": page,
@@ -489,7 +489,7 @@ class GitHubAnalyzer:
 
         all_contributor_data = []
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
             future_to_repo = {executor.submit(self.analyze_repository_contributors, repo): repo for repo in
                               repositories}
 
@@ -563,7 +563,7 @@ def main():
         return
     else:
         repo_count = 10
-        max_workers = 5
+        max_workers = 50
 
     # Минимальное количество коммитов для фильтрации
     min_commits = 1000
