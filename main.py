@@ -50,6 +50,10 @@ class GitHubAnalyzer:
             'blog', 'blog-posts', 'writing', 'documentation', 'roadmap', "public API\'s"
         }
 
+        # Счетчики лимитов
+        self.search_remaining = 30
+        self.core_remaining = 5000
+
     def get_commit_count(self, owner, repo):
         """Получить общее количество коммитов в репозитории"""
         url = f"{self.base_url}/repos/{owner}/{repo}/commits"
@@ -61,15 +65,12 @@ class GitHubAnalyzer:
         if response.status_code != 200:
             return 0
 
-        # Получаем количество коммитов из заголовков Link
         link_header = response.headers.get('Link', '')
         if link_header:
-            # Ищем последнюю страницу в заголовке Link
             last_match = re.search(r'page=(\d+)>; rel="last"', link_header)
             if last_match:
                 return int(last_match.group(1))
 
-        # Если нет заголовка Link, считаем коммиты на первой странице
         commits = response.json()
         return len(commits) if isinstance(commits, list) else 0
 
@@ -77,7 +78,7 @@ class GitHubAnalyzer:
         """Проверить, является ли репозиторий техническим (имеет язык программирования)"""
         language = repo_data.get('language')
         if not language or language in ["Markdown", "HTML"]:
-            print(f"  ⚠️  Пропуск: нет языка программирования - {repo_data['full_name']}")
+            print(f"Пропуск: нет языка программирования - {repo_data['full_name']}")
             return False
 
         description = self.safe_lower(repo_data.get('description', ''))
@@ -87,11 +88,11 @@ class GitHubAnalyzer:
 
         non_tech_indicators = sum(1 for keyword in self.non_tech_keywords if keyword in repo_text)
         if non_tech_indicators >= 2:
-            print(f"  ⚠️  Пропуск: не-технический контент - {repo_data['full_name']}")
+            print(f"Пропуск: не-технический контент - {repo_data['full_name']}")
             return False
 
         if self.is_likely_non_tech(repo_data):
-            print(f"  ⚠️  Пропуск: вероятно не-технический - {repo_data['full_name']}")
+            print(f"Пропуск: вероятно не-технический - {repo_data['full_name']}")
             return False
 
         return True
@@ -103,7 +104,7 @@ class GitHubAnalyzer:
 
         known_non_tech_repos = {
             'awesome', 'awesome-list', 'interview', 'books', 'paper',
-            'curriculum', 'syllabus', 'lecture-notes'
+            'curriculum', 'syllabus', 'lecture-notes', 'javascript-algorithms'
         }
 
         for non_tech_repo in known_non_tech_repos:
@@ -157,6 +158,23 @@ class GitHubAnalyzer:
 
         return "individual"
 
+    def wait_for_rate_limit(self, reset_time):
+        """Ожидание сброса лимита"""
+        current_time = time.time()
+        sleep_time = max(reset_time - current_time, 0) + 10  # +10 секунд для надежности
+
+        if sleep_time > 300:  # Если ожидание больше 5 минут
+            print(f"⏳ Длительное ожидание: {sleep_time / 60:.1f} минут")
+            # Разбиваем ожидание на части с прогрессом
+            for i in range(int(sleep_time / 60)):
+                remaining = sleep_time - i * 60
+                print(f"   Осталось: {remaining / 60:.1f} минут")
+                time.sleep(60)
+            time.sleep(sleep_time % 60)
+        else:
+            print(f"⏳ Ожидание: {sleep_time:.0f} секунд")
+            time.sleep(sleep_time)
+
     def make_request(self, url, params=None, is_search=False):
         """Безопасный запрос с проверкой rate limit"""
         try:
@@ -204,8 +222,8 @@ class GitHubAnalyzer:
             time.sleep(5)
             return self.make_request(url, params, is_search)
 
-    def get_all_contributors(self, owner, repo, max_contributors=50):
-        """Получить всех контрибьюторов с пагинацией"""
+    def get_all_contributors(self, owner, repo, max_contributors=50, min_contributions=100):
+        """Получить всех контрибьюторов с пагинацией и фильтрацией по минимальному количеству коммитов"""
         contributors = []
         page = 1
 
@@ -225,7 +243,13 @@ class GitHubAnalyzer:
             if not page_contributors:
                 break
 
-            contributors.extend(page_contributors)
+            # Фильтруем контрибьюторов по минимальному количеству коммитов
+            filtered_contributors = [
+                contributor for contributor in page_contributors
+                if contributor.get('contributions', 0) >= min_contributions
+            ]
+
+            contributors.extend(filtered_contributors)
 
             if len(page_contributors) < 100:
                 break
@@ -233,8 +257,9 @@ class GitHubAnalyzer:
             page += 1
             time.sleep(0.1)
 
+        print(
+            f"После фильтрации осталось контрибьюторов: {len(contributors)} (минимум {min_contributions} коммитов)")
         return contributors[:max_contributors]
-
     def get_user_commits(self, owner, repo, username, max_commits=5):
         """Получить коммиты конкретного пользователя в репозитории"""
         commits = []
