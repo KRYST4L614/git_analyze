@@ -152,7 +152,7 @@ class GitHubAnalyzer:
         topics = repo_data.get('topics', [])
         if topics:
             topics_lower = [self.safe_lower(topic) for topic in topics]
-            edu_topics = {'education', 'learning', 'tutorial', 'course', 'students'}
+            edu_topics = {'education', 'learning', 'tutorial', 'course', 'students', 'labs'}
             if any(topic in topics_lower for topic in edu_topics):
                 return "educational"
 
@@ -337,7 +337,7 @@ class GitHubAnalyzer:
         while len(repos) < count:
             url = f"{self.base_url}/search/repositories"
             params = {
-                "q": "stars:1000..44000 -language:HTML -language:TypeScript -language:Markdown",
+                "q": "stars:89000..140000 -language:HTML -language:TypeScript -language:Markdown",
                 "sort": "stars",
                 "order": "desc",
                 "page": page,
