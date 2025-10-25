@@ -189,7 +189,7 @@ class GitHubDatasetCollector:
             url = f"{self.__client.base_url}/repos/{owner}/{repo}/contributors"
             params = {
                 "page": page,
-                "per_page": 100,
+                "per_page": 1000,
                 "anon": "0"
             }
 
@@ -218,7 +218,7 @@ class GitHubDatasetCollector:
         print(f"Contributors after filtering: {len(contributors)} (minimum {self.__min_contributions} commits)")
         return contributors[:self.__max_contributors]
 
-    def __get_user_commits(self, owner, repo, username, max_commits=5):
+    def __get_user_commits(self, owner, repo, username, max_commits=100):
         """Get commits by specific user in repository"""
         commits = []
         page = 1
@@ -228,7 +228,7 @@ class GitHubDatasetCollector:
             params = {
                 "author": username,
                 "page": page,
-                "per_page": 10
+                "per_page": max_commits
             }
 
             response = self.__client.make_request(url, params=params)
