@@ -13,13 +13,12 @@ from datetime import datetime
 from data.github.github_collector import GitHubDatasetCollector
 from utils.utils import save_to_csv
 
-
-def setup_imports():
-    """Setup proper imports by adding src to path"""
-    src_dir = os.path.dirname(__file__)
-    if src_dir not in sys.path:
-        sys.path.insert(0, src_dir)
-
+COLLECT_REPOS_DEFAULT = 1
+COLLECT_MAX_CONTRIBUTORS_PER_REPO_DEFAULT = 50
+COLLECT_MIN_CONTRIBUTORS_DEFAULT = 100
+COLLECT_MAX_COMMITS_DEFAULT = 1000
+COLLECT_MIN_COMMITS_DEFAULT = 10000
+COLLECT_WORKERS_DEFAULT = 50
 
 def get_collect_parser():
     """Parser for data collection command"""
@@ -37,43 +36,43 @@ def get_collect_parser():
     parser.add_argument(
         '--repos',
         type=int,
-        default=100,
-        help='Maximum repositories to analyze (default: 100)'
+        default=COLLECT_REPOS_DEFAULT,
+        help=f'Maximum repositories to analyze (default: {COLLECT_REPOS_DEFAULT})'
     )
 
     parser.add_argument(
         '--contributors',
         type=int,
-        default=50,
-        help='Maximum contributors per repository (default: 50)'
+        default=COLLECT_MAX_CONTRIBUTORS_PER_REPO_DEFAULT,
+        help=f'Maximum contributors per repository (default: {COLLECT_MAX_CONTRIBUTORS_PER_REPO_DEFAULT})'
     )
 
     parser.add_argument(
         '--min-contributions',
         type=int,
-        default=100,
-        help='Minimum contributions per contributor (default: 100)'
+        default=COLLECT_MIN_CONTRIBUTORS_DEFAULT,
+        help=f'Minimum contributions per contributor (default: {COLLECT_MIN_CONTRIBUTORS_DEFAULT})'
     )
 
     parser.add_argument(
         '--min-commits',
         type=int,
-        default=1000,
-        help='Minimum commits per repository (default: 1000)'
+        default=COLLECT_MIN_COMMITS_DEFAULT,
+        help=f'Minimum commits per repository (default: {COLLECT_MIN_COMMITS_DEFAULT})'
     )
 
     parser.add_argument(
         '--max-commits',
         type=int,
-        default=1000,
-        help='Maximum commits per user (default: 1000)'
+        default=COLLECT_MAX_COMMITS_DEFAULT,
+        help=f'Maximum commits per user (default: {COLLECT_MAX_COMMITS_DEFAULT})'
     )
 
     parser.add_argument(
         '--workers',
         type=int,
-        default=50,
-        help='Number of worker threads (default: 50)'
+        default=COLLECT_WORKERS_DEFAULT,
+        help=f'Number of worker threads (default: {COLLECT_WORKERS_DEFAULT})'
     )
 
     parser.add_argument(
@@ -114,8 +113,6 @@ def get_analyze_parser():
 
 def main():
     """Main entry point with subcommands"""
-    setup_imports()
-
     parser = argparse.ArgumentParser(
         description='GitHub Dataset Tool - Collect and analyze GitHub repository data',
         formatter_class=argparse.RawDescriptionHelpFormatter,
