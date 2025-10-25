@@ -273,7 +273,7 @@ class GitHubDatasetCollector:
         while len(repos) < count:
             url = f"{self.__client.base_url}/search/repositories"
             params = {
-                "q": "stars:1000..66739 -language:HTML -language:TypeScript -language:Markdown",
+                "q": "stars:>1000 -language:HTML -language:TypeScript -language:Markdown",
                 "sort": "stars",
                 "order": "desc",
                 "page": page,
