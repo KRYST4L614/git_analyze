@@ -18,6 +18,7 @@ class RepositoryClassifier:
         self.n_workers = n_workers or mp.cpu_count()
 
         self.uow = UnitOfWork(self.database_url)
+        self.uow.create_type_clustering_tables()
 
         self.analysis_repo = AnalysisRepository(self.database_url)
         self.analysis_repo.uow = self.uow
@@ -328,7 +329,7 @@ class RepositoryClassifier:
 
 class RepositoryAnalyzer:
     def __init__(self, database_url: str, n_workers: int = None):
-        UnitOfWork(database_url).create_analysis_tables()
+        UnitOfWork(database_url).create_type_clustering_tables()
         self.classifier = RepositoryClassifier(database_url, n_workers)
 
     def analyze(self) -> Dict:

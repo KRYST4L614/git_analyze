@@ -34,7 +34,7 @@ class City(Base):
 
 
 class ContributorLocation(Base):
-    __tablename__ = 'contributor_locations2'
+    __tablename__ = 'contributor_locations'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     contributor_id = Column(Integer, nullable=False, unique=True, index=True)
