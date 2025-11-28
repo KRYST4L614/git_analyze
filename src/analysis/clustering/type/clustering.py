@@ -1,19 +1,27 @@
-import pandas as pd
-from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, List, Optional, Any
 import multiprocessing as mp
+import warnings
+from concurrent.futures import ThreadPoolExecutor
 from functools import partial
+from typing import Dict, List, Optional, Any
+
+import pandas as pd
+
 from src.analysis.clustering.type.repo.repo import AnalysisRepository
 from src.storage.unit_of_work import UnitOfWork
-import warnings
 
 warnings.filterwarnings('ignore')
 
 
 class RepositoryClassifier:
-    def __init__(self, analysis_repo, n_workers: int = None):
-        self.analysis_repo = analysis_repo
+    def __init__(self, database_url: str, n_workers: int = None):
+        self.database_url = database_url
         self.n_workers = n_workers or mp.cpu_count()
+
+        self.uow = UnitOfWork(self.database_url)
+        self.uow.create_type_clustering_tables()
+
+        self.analysis_repo = AnalysisRepository(self.database_url)
+        self.analysis_repo.uow = self.uow
 
         self.corporate_indicators = {
             'microsoft', 'google', 'apple', 'amazon', 'meta', 'facebook', 'twitter',
@@ -48,6 +56,10 @@ class RepositoryClassifier:
             'playground', 'experiment', 'trial', 'prototype', 'mock', 'sample',
             'blog', 'portfolio', 'website', 'resume', 'cv'
         }
+
+    def __del__(self):
+        if hasattr(self, 'uow'):
+            self.uow.dispose()
 
     def map_extract_textual_data(self, chunk: pd.DataFrame) -> List[Dict]:
         results = []
@@ -97,10 +109,9 @@ class RepositoryClassifier:
         total_weight = sum(weights.values())
 
         if max_weight < 1.0:
-            return 'personal', 0.1  # Слишком слабые признаки
+            return 'personal', 0.1
 
         if max_type == 'corporate' and max_weight < 2.0:
-            # Для corporate нужны более строгие критерии
             sorted_weights = sorted(weights.items(), key=lambda x: x[1], reverse=True)
             if len(sorted_weights) > 1 and sorted_weights[1][1] > 1.0:
                 second_type = sorted_weights[1][0]
@@ -283,18 +294,7 @@ class RepositoryClassifier:
 
             analysis = self.analyze_results(results_df)
 
-            analysis_summary = {
-                'total_repositories': analysis['total_repositories'],
-                'type_distribution': analysis['type_distribution'],
-                'confidence_stats': analysis['confidence_stats'],
-                'processing_stats': {
-                    'chunks_processed': len(chunks),
-                    'total_repositories': len(results_df),
-                    'workers_used': self.n_workers
-                }
-            }
-
-            self.analysis_repo.save_clustering_results(results_df, analysis_summary)
+            self.analysis_repo.save_clustering_results(results_df)
 
             self._print_results_summary(analysis)
 
@@ -306,6 +306,8 @@ class RepositoryClassifier:
         except Exception as e:
             print(f"Error during analysis: {e}")
             return {"error": str(e)}
+        finally:
+            self.uow.dispose()
 
     def _print_results_summary(self, analysis: Dict):
         print("\nCLASSIFICATION RESULTS SUMMARY")
@@ -327,9 +329,8 @@ class RepositoryClassifier:
 
 class RepositoryAnalyzer:
     def __init__(self, database_url: str, n_workers: int = None):
-        UnitOfWork(database_url).create_analysis_tables()
-        analysis_repo = AnalysisRepository(database_url)
-        self.analyzer = RepositoryClassifier(analysis_repo, n_workers)
+        UnitOfWork(database_url).create_type_clustering_tables()
+        self.classifier = RepositoryClassifier(database_url, n_workers)
 
     def analyze(self) -> Dict:
-        return self.analyzer.run_analysis()
+        return self.classifier.run_analysis()

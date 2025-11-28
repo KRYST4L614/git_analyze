@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, Float, JSON, ForeignKey
+from sqlalchemy import Column, Integer, String, DateTime, Float, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -34,7 +34,7 @@ class City(Base):
 
 
 class ContributorLocation(Base):
-    __tablename__ = 'contributor_locations2'
+    __tablename__ = 'contributor_locations'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     contributor_id = Column(Integer, nullable=False, unique=True, index=True)

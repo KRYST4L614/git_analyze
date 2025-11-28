@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - GA-*
-      - dev/*
+      - dev/**
       - main
 
 jobs:

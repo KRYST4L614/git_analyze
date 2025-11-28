@@ -1,5 +1,5 @@
-from src.data.github.github_collector import GitHubDatasetCollector
-from unittest.mock import MagicMock
+from src.data.github.github_collector import _extract_commit_details
+
 
 def test_extract_commit_details_valid():
     commit_data = {
@@ -15,12 +15,13 @@ def test_extract_commit_details_valid():
         "files": [{"filename": "main.py"}]
     }
 
-    result = GitHubDatasetCollector._extract_commit_details(commit_data, "owner", "repo", "user")
+    result = _extract_commit_details(commit_data, "owner", "repo", "user")
     assert result["sha"] == "abc"
     assert result["author_name"] == "John"
     assert "main.py" in result["files_changed"]
 
+
 def test_extract_commit_details_error():
     bad_commit = {"commit": "not-a-dict"}
-    result = GitHubDatasetCollector._extract_commit_details(bad_commit, "o", "r", "u")
+    result = _extract_commit_details(bad_commit, "o", "r", "u")
     assert result is None

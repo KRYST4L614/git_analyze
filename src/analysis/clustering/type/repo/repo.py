@@ -5,19 +5,28 @@ from src.analysis.clustering.type.models.models import (
     RepositoryClusteringResult,
     RepositoryType
 )
-from typing import List, Dict, Any
+from typing import List, Dict
 import pandas as pd
 
 
-class AnalysisRepository:
+class BaseAnalysisRepository:
     def __init__(self, database_url: str = None):
         self.database_url = database_url
-        self._ensure_repository_types()
+        self._uow = None
+
+    @property
+    def uow(self):
+        if self._uow is None:
+            self._uow = UnitOfWork(self.database_url)
+        return self._uow
+
+    @uow.setter
+    def uow(self, value):
+        self._uow = value
 
     @contextmanager
     def session_scope(self):
-        uow = UnitOfWork(self.database_url)
-        session = uow.get_session()
+        session = self.uow.get_session()
         try:
             yield session
             session.commit()
@@ -26,6 +35,12 @@ class AnalysisRepository:
             raise
         finally:
             session.close()
+
+
+class AnalysisRepository(BaseAnalysisRepository):
+    def __init__(self, database_url: str = None):
+        super().__init__(database_url)
+        self._ensure_repository_types()
 
     def _ensure_repository_types(self):
         with self.session_scope() as session:
@@ -44,9 +59,6 @@ class AnalysisRepository:
             return {repo_type.name: repo_type.id for repo_type in types}
 
     def load_repository_data(self, chunk_size: int = 1000) -> List[pd.DataFrame]:
-        """
-        Загрузка данных репозиториев через репозиторий
-        """
         chunks = []
         with self.session_scope() as session:
             query = text("""
@@ -68,18 +80,12 @@ class AnalysisRepository:
 
         return chunks
 
-    def save_clustering_results(self, results_df: pd.DataFrame, analysis_summary: Dict[str, Any]):
-        """
-        Сохранение результатов кластеризации в БД
-        """
+    def save_clustering_results(self, results_df: pd.DataFrame):
         with self.session_scope() as session:
-            # Очищаем старые результаты перед сохранением новых
             session.query(RepositoryClusteringResult).delete()
 
-            # Получаем маппинг типов
             type_mapping = self._get_type_mapping()
 
-            # Сохраняем результаты по каждому репозиторию
             for _, row in results_df.iterrows():
                 repo_type_name = row.get('final_type', 'personal')
                 repo_type_id = type_mapping.get(repo_type_name, 3)
@@ -87,7 +93,6 @@ class AnalysisRepository:
                 result = RepositoryClusteringResult(
                     repo_id=row['repo_id'],
                     repo_name=row.get('full_name', ''),
-                    cluster_id=row.get('cluster'),
                     repo_type_id=repo_type_id,
                     corporate_weight=row.get('corporate_weight', 0.0),
                     educational_weight=row.get('educational_weight', 0.0),

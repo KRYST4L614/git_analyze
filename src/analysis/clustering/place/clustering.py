@@ -1,12 +1,15 @@
-import pandas as pd
-from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, List, Optional, Any
+import concurrent
 import multiprocessing as mp
 import warnings
-from geopy.geocoders import Nominatim
-from geopy.exc import GeocoderTimedOut, GeocoderServiceError
-import time
+from concurrent.futures import ThreadPoolExecutor
+from typing import Dict, Optional, Any
+
 import cachetools
+from geopy.exc import GeocoderTimedOut, GeocoderServiceError
+from geopy.geocoders import Nominatim
+
+from src.analysis.clustering.place.repo.repo import LocationRepository
+from src.storage.unit_of_work import UnitOfWork
 
 warnings.filterwarnings('ignore')
 
@@ -77,72 +80,106 @@ class GeoLocationService:
 
 
 class ContributorLocationClustering:
-    def __init__(self, location_repo, n_workers: int = None):
+    def __init__(self, database_url: str, location_repo: LocationRepository, n_workers: int = None):
+        self.database_url = database_url
         self.location_repo = location_repo
         self.n_workers = n_workers or mp.cpu_count()
         self.geo_service = GeoLocationService()
 
-    def _process_and_save_single_contributor(self, row) -> bool:
-        contributor_id = row['contributor_id']
-        original_location = str(row['location'] or '')
+    def _process_contributor_chunk(self, contributor_chunk, database_url, chunk_id):
 
-        if not original_location or original_location.strip() == '':
-            return False
+        uow = UnitOfWork(database_url)
+        self.location_repo.uow = uow
 
-        geodata = self.geo_service.geocode_location(original_location)
+        geo_service = GeoLocationService()
 
-        if not geodata:
-            return False
-
-        country = self.geo_service.extract_country_from_geodata(geodata)
-        city = self.geo_service.extract_city_from_geodata(geodata)
-
-        if not country:
-            return False
+        successful_count = 0
 
         try:
-            success = self.location_repo.save_contributor_location(
-                contributor_id=contributor_id,
-                original_location=original_location,
-                country_name=country,
-                city_name=city,
-                latitude=geodata.get('latitude'),
-                longitude=geodata.get('longitude')
-            )
-            if success:
-                print(f"✓ Saved location for contributor {contributor_id}: {country}, {city}")
-            return success
+            print(f"Chunk {chunk_id}: Processing {len(contributor_chunk)} contributors")
+
+            for _, row in contributor_chunk.iterrows():
+                contributor_id = row['contributor_id']
+                original_location = str(row['location'] or '')
+
+                if not original_location or original_location.strip() == '':
+                    continue
+
+                geodata = geo_service.geocode_location(original_location)
+
+                if not geodata:
+                    continue
+
+                country = geo_service.extract_country_from_geodata(geodata)
+                city = geo_service.extract_city_from_geodata(geodata)
+
+                if not country:
+                    continue
+
+                try:
+                    success = self.location_repo.save_contributor_location(
+                        contributor_id=contributor_id,
+                        original_location=original_location,
+                        country_name=country,
+                        city_name=city,
+                        latitude=geodata.get('latitude'),
+                        longitude=geodata.get('longitude')
+                    )
+                    if success:
+                        successful_count += 1
+                        print(f"Chunk {chunk_id}: ✓ Saved location for contributor {contributor_id}: {country}, {city}")
+                except Exception as e:
+                    print(f"Chunk {chunk_id}: ✗ Error saving location for contributor {contributor_id}: {e}")
+
+            print(f"Chunk {chunk_id} completed: {successful_count}/{len(contributor_chunk)} locations determined")
+            return successful_count
+
         except Exception as e:
-            print(f"✗ Error saving location for contributor {contributor_id}: {e}")
-            return False
-
-    def process_contributors(self, df: pd.DataFrame) -> int:
-        print("Processing contributor locations...")
-
-        total = len(df)
-
-        with ThreadPoolExecutor(max_workers=self.n_workers) as executor:
-            results = list(executor.map(self._process_and_save_single_contributor, [row for _, row in df.iterrows()]))
-            successful = sum(results)
-
-        print(f"Completed: {successful}/{total} locations determined")
-        return successful
+            print(f"Chunk {chunk_id}: Error processing chunk: {e}")
+            return 0
+        finally:
+            uow.dispose()
 
     def run_location_analysis(self) -> Dict[str, Any]:
         print("Starting contributor location analysis...")
 
         try:
-            df = self.location_repo.load_contributor_location_data()
+            location_repo = LocationRepository(self.database_url)
+            df = location_repo.load_contributor_location_data()
 
             if df.empty:
                 return {"error": "No contributor data available"}
 
             print(f"Loaded {len(df)} contributors")
 
-            successful = self.process_contributors(df)
+            chunk_size = max(1, len(df) // self.n_workers)
+            contributor_chunks = [df[i:i + chunk_size] for i in range(0, len(df), chunk_size)]
+
+            print(f"Split into {len(contributor_chunks)} chunks")
+
+            total_successful = 0
+
+            with ThreadPoolExecutor(max_workers=self.n_workers) as executor:
+                future_to_chunk = {
+                    executor.submit(
+                        self._process_contributor_chunk,
+                        chunk, self.database_url, chunk_id
+                    ): chunk_id for chunk_id, chunk in enumerate(contributor_chunks)
+                }
+
+                for future in concurrent.futures.as_completed(future_to_chunk):
+                    chunk_id = future_to_chunk[future]
+                    try:
+                        result = future.result()
+                        total_successful += result
+                        print(f"Chunk {chunk_id} finished: {result} successful locations")
+                    except Exception as e:
+                        print(f"Chunk {chunk_id}: Error in future: {e}")
+
+            print(f"Completed: {total_successful}/{len(df)} locations determined")
 
             return {
-                "successful_locations": successful,
+                "successful_locations": total_successful,
                 "total_contributors": len(df)
             }
 
@@ -153,12 +190,10 @@ class ContributorLocationClustering:
 
 class LocationAnalyzer:
     def __init__(self, database_url: str, n_workers: int = None):
-        from src.storage.unit_of_work import UnitOfWork
-        from src.analysis.clustering.place.repo.repo import LocationRepository
-
         UnitOfWork(database_url).create_location_tables()
         location_repo = LocationRepository(database_url)
-        self.analyzer = ContributorLocationClustering(location_repo, n_workers)
+
+        self.analyzer = ContributorLocationClustering(database_url, location_repo, n_workers)
 
     def analyze(self) -> Dict:
         return self.analyzer.run_location_analysis()

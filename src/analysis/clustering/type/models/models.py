@@ -26,7 +26,6 @@ class RepositoryClusteringResult(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     repo_id = Column(Integer, nullable=False, index=True)
     repo_name = Column(String(255))
-    cluster_id = Column(Integer)
     repo_type_id = Column(Integer, ForeignKey('repository_types.id'), nullable=False)
     corporate_weight = Column(Float)
     educational_weight = Column(Float)

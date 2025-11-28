@@ -1,3 +1,4 @@
+# src/analysis/clustering/place/repo/repo.py
 from contextlib import contextmanager
 from sqlalchemy import text
 from src.storage.unit_of_work import UnitOfWork
@@ -6,18 +7,28 @@ from src.analysis.clustering.place.models.models import (
     City,
     ContributorLocation
 )
-from typing import List, Dict, Any, Optional, Tuple
+from typing import Tuple
 import pandas as pd
 
 
-class LocationRepository:
+class BaseLocationRepository:
     def __init__(self, database_url: str = None):
         self.database_url = database_url
+        self._uow = None
+
+    @property
+    def uow(self):
+        if self._uow is None:
+            self._uow = UnitOfWork(self.database_url)
+        return self._uow
+
+    @uow.setter
+    def uow(self, value):
+        self._uow = value
 
     @contextmanager
     def session_scope(self):
-        uow = UnitOfWork(self.database_url)
-        session = uow.get_session()
+        session = self.uow.get_session()
         try:
             yield session
             session.commit()
@@ -27,10 +38,12 @@ class LocationRepository:
         finally:
             session.close()
 
+
+class LocationRepository(BaseLocationRepository):
+    def __init__(self, database_url: str = None):
+        super().__init__(database_url)
+
     def load_contributor_location_data(self) -> pd.DataFrame:
-        """
-        Загрузка данных о контрибьютерах и их локациях
-        """
         with self.session_scope() as session:
             query = text("""
                 SELECT 
@@ -55,12 +68,7 @@ class LocationRepository:
             return df
 
     def get_or_create_country(self, country_name: str) -> Tuple[bool, int]:
-        """
-        Получает или создает страну в базе данных
-        Возвращает (created, country_id)
-        """
         with self.session_scope() as session:
-            # Ищем существующую страну
             country = session.query(Country).filter(
                 Country.name == country_name
             ).first()
@@ -68,22 +76,16 @@ class LocationRepository:
             if country:
                 return False, country.id
 
-            # Создаем новую страну
             new_country = Country(name=country_name)
             session.add(new_country)
-            session.flush()  # Получаем ID
+            session.flush()
 
             print(f"Created new country: {country_name} (ID: {new_country.id})")
             return True, new_country.id
 
     def get_or_create_city(self, city_name: str, country_id: int,
                            latitude: float = None, longitude: float = None) -> Tuple[bool, int]:
-        """
-        Получает или создает город в базе данных
-        Возвращает (created, city_id)
-        """
         with self.session_scope() as session:
-            # Ищем существующий город
             city = session.query(City).filter(
                 City.name == city_name,
                 City.country_id == country_id
@@ -92,7 +94,6 @@ class LocationRepository:
             if city:
                 return False, city.id
 
-            # Создаем новый город
             new_city = City(
                 name=city_name,
                 country_id=country_id,
@@ -100,7 +101,7 @@ class LocationRepository:
                 longitude=longitude
             )
             session.add(new_city)
-            session.flush()  # Получаем ID
+            session.flush()
 
             print(f"Created new city: {city_name} (Country ID: {country_id})")
             return True, new_city.id
@@ -108,35 +109,27 @@ class LocationRepository:
     def save_contributor_location(self, contributor_id: int, original_location: str,
                                   country_name: str, city_name: str = None,
                                   latitude: float = None, longitude: float = None) -> bool:
-        """
-        Сохранение локации контрибьютера с использованием словарей
-        """
         try:
             with self.session_scope() as session:
-                # Получаем или создаем страну
                 _, country_id = self.get_or_create_country(country_name)
 
                 city_id = None
                 if city_name and city_name != 'unknown':
-                    # Получаем или создаем город
                     _, city_id = self.get_or_create_city(
                         city_name, country_id, latitude, longitude
                     )
 
-                # Проверяем, есть ли уже запись для этого контрибьютера
                 existing_location = session.query(ContributorLocation).filter_by(
                     contributor_id=contributor_id
                 ).first()
 
                 if existing_location:
-                    # Обновляем существующую запись
                     existing_location.country_id = country_id
                     existing_location.city_id = city_id
                     existing_location.latitude = latitude
                     existing_location.longitude = longitude
                     existing_location.original_location = original_location
                 else:
-                    # Создаем новую запись
                     new_location = ContributorLocation(
                         contributor_id=contributor_id,
                         original_location=original_location,
@@ -154,9 +147,6 @@ class LocationRepository:
             return False
 
     def get_contributor_locations(self) -> pd.DataFrame:
-        """
-        Получение всех локаций контрибьютеров с JOIN на словари
-        """
         with self.session_scope() as session:
             query = text("""
                 SELECT 

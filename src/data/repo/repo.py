@@ -4,14 +4,25 @@ from src.storage.unit_of_work import UnitOfWork
 from src.data.models.models import Repository, Contributor, Commit, RepositoryContributor
 
 
-class RepositoryRepository:
+class BaseRepository:
     def __init__(self, database_url: str = None):
         self.database_url = database_url
+        self._uow = None
+
+    @property
+    def uow(self):
+        if self._uow is None:
+            self._uow = UnitOfWork(self.database_url)
+        return self._uow
+
+    @uow.setter
+    def uow(self, value):
+        self._uow = value
 
     @contextmanager
     def session_scope(self):
-        uow = UnitOfWork(self.database_url)
-        session = uow.get_session()
+        """Контекстный менеджер сессии с общим UnitOfWork"""
+        session = self.uow.get_session()
         try:
             yield session
             session.commit()
@@ -20,6 +31,11 @@ class RepositoryRepository:
             raise
         finally:
             session.close()
+
+
+class RepositoryRepository(BaseRepository):
+    def __init__(self, database_url: str = None):
+        super().__init__(database_url)
 
     def upsert_repository(self, repo_data):
         with self.session_scope() as session:
@@ -63,22 +79,9 @@ class RepositoryRepository:
             session.execute(stmt)
 
 
-class ContributorRepository:
+class ContributorRepository(BaseRepository):
     def __init__(self, database_url: str = None):
-        self.database_url = database_url
-
-    @contextmanager
-    def session_scope(self):
-        uow = UnitOfWork(self.database_url)
-        session = uow.get_session()
-        try:
-            yield session
-            session.commit()
-        except Exception:
-            session.rollback()
-            raise
-        finally:
-            session.close()
+        super().__init__(database_url)
 
     def exists(self, contributor_id: int) -> bool:
         with self.session_scope() as session:
@@ -134,22 +137,9 @@ class ContributorRepository:
             session.execute(stmt)
 
 
-class CommitRepository:
+class CommitRepository(BaseRepository):
     def __init__(self, database_url: str = None):
-        self.database_url = database_url
-
-    @contextmanager
-    def session_scope(self):
-        uow = UnitOfWork(self.database_url)
-        session = uow.get_session()
-        try:
-            yield session
-            session.commit()
-        except Exception:
-            session.rollback()
-            raise
-        finally:
-            session.close()
+        super().__init__(database_url)
 
     def upsert_commit(self, commit_data, repo_id, author_id):
         with self.session_scope() as session:

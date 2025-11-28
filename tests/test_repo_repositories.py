@@ -8,7 +8,6 @@ def mock_session():
     return MagicMock()
 
 
-# ✅ Patch the entire UnitOfWork class, not just .get_session
 @patch("src.data.repo.repo.UnitOfWork", autospec=True)
 def test_upsert_repository(mock_uow_class, mock_session):
     # Make UnitOfWork().get_session() return our mock session
