@@ -1,29 +1,37 @@
-from sqlalchemy import Column, Integer, Float, DateTime
-from sqlalchemy.ext.declarative import declarative_base
+# src/analysis/correlation/models/models.py
+
+from sqlalchemy import Column, Integer, Float, DateTime, ForeignKey
 from datetime import datetime
-
-Base = declarative_base()
-
+from src.data.models.models import Base  # shared Base
 
 class CommitCorrelationResult(Base):
     __tablename__ = "commit_correlation_result"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    repo_id = Column(Integer, ForeignKey("repositories.id"), nullable=True, index=True)
 
-    # Global correlations for commits
-    commit_corr_week_of_year = Column(Float)   # corr(week_of_year, commit_count)
-    commit_corr_week_index = Column(Float)     # corr(week_index, commit_count)
+    # correlations
+    commit_corr_week_of_year = Column(Float)
+    commit_corr_week_index = Column(Float)
+    pr_corr_week_of_year = Column(Float)
+    pr_corr_week_index = Column(Float)
 
-    # Global correlations for PR -> commit lead time
-    pr_corr_week_of_year = Column(Float)       # corr(week_of_year, avg_lead_time_hours)
-    pr_corr_week_index = Column(Float)         # corr(week_index, avg_lead_time_hours)
+    # NEW: sample sizes / volumes
+    n_weeks_commits = Column(Integer)      # how many weekly commit points
+    total_commits = Column(Integer)       # total commits used
+
+    n_weeks_pr_lead = Column(Integer)     # how many weekly lead-time points
+    n_pr_merges_used = Column(Integer)    # how many merged PRs
 
     computed_at = Column(DateTime, default=datetime.utcnow)
 
     def __repr__(self):
         return (
             f"<CommitCorrelationResult("
+            f"repo_id={self.repo_id}, "
             f"commit_corr_week_index={self.commit_corr_week_index}, "
-            f"pr_corr_week_index={self.pr_corr_week_index}"
+            f"pr_corr_week_index={self.pr_corr_week_index}, "
+            f"n_weeks_commits={self.n_weeks_commits}, "
+            f"n_weeks_pr_lead={self.n_weeks_pr_lead}"
             f")>"
         )
