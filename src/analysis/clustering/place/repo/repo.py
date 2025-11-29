@@ -46,6 +46,7 @@ class LocationRepository:
                 LEFT JOIN commits cm ON c.id = cm.author_id
                 WHERE c.location IS NOT NULL 
                     AND c.location != ''
+                    AND c.id > 20000000
                 GROUP BY c.id, c.login, c.location, c.company, c.email
                 HAVING COUNT(cm.sha) >= 1
             """)

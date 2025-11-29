@@ -1,19 +1,8 @@
 #!/usr/bin/env python3
-"""
-Correlation analysis WITHOUT Spark:
 
-- Корреляция между неделей и частотой коммитов
-- Корреляция между неделей и временем от ПР до коммита
+from typing import Dict, Any, List, Optional
+from concurrent.futures import ThreadPoolExecutor
 
-Usage from main.py:
-
-    from src.analysis.correlation.correlation import CommitCorrelationAnalyzer
-
-    analyzer = CommitCorrelationAnalyzer(database_url, workers)
-    results = analyzer.analyze()
-"""
-
-from typing import Dict, Any
 import numpy as np
 import pandas as pd
 
@@ -22,189 +11,178 @@ from src.storage.unit_of_work import UnitOfWork
 
 
 class CommitCorrelationCore:
-    def __init__(self, repo: CorrelationRepository):
+    def __init__(self, repo: CorrelationRepository, n_workers: Optional[int] = None):
         self.repo = repo
-
-    # ---------- helpers ----------
+        self.n_workers = n_workers
 
     @staticmethod
-    def _corr_safe(a: pd.Series, b: pd.Series) -> float | None:
-        """
-        Safe Pearson correlation: returns None if not enough data.
-        """
-        if len(a) < 2 or len(b) < 2:
-            return None
-        try:
-            return float(a.corr(b))
-        except Exception:
-            return None
+    def _kruskal_wallis_week_vs_commits(
+        commits: pd.DataFrame,
+        alpha: float = 0.05,
+    ) -> Dict[str, Any]:
 
-    # ---------- 1) WEEK vs COMMIT FREQUENCY ----------
+        empty = {
+            "kw_h_stat": None,
+            "kw_p_value": None,
+            "eta_squared": None,
+            "has_week_dependency": False,
+            "n_weeks": 0,
+            "n_week_groups": 0,
+            "total_commits": int(len(commits)) if commits is not None else 0,
+        }
 
-    def _commit_frequency_correlation(self, commits: pd.DataFrame) -> Dict[str, Any]:
-        if commits.empty:
-            print("[CommitCorrelationCore] No commit data found.")
-            return {
-                "commit_corr_week_of_year": None,
-                "commit_corr_week_index": None,
-            }
+        if commits is None or commits.empty:
+            return empty
 
-        commits["commit_date"] = pd.to_datetime(commits["commit_date"])
-        iso = commits["commit_date"].dt.isocalendar()
-        commits["year"] = iso.year
-        commits["week_of_year"] = iso.week
+        df = commits.copy()
+        df["commit_date"] = pd.to_datetime(df["commit_date"])
+
+        iso = df["commit_date"].dt.isocalendar()
+        df["year"] = iso.year
+        df["week_of_year"] = iso.week
 
         weekly = (
-            commits.groupby(["year", "week_of_year"], as_index=False)
+            df.groupby(["year", "week_of_year"], as_index=False)
             .size()
             .rename(columns={"size": "commit_count"})
             .sort_values(["year", "week_of_year"])
         )
 
-        weekly["week_index"] = np.arange(1, len(weekly) + 1)
+        if weekly.empty:
+            return empty
 
-        corr_week_of_year = self._corr_safe(
-            weekly["week_of_year"], weekly["commit_count"]
-        )
-        corr_week_index = self._corr_safe(
-            weekly["week_index"], weekly["commit_count"]
-        )
+        groups_df = weekly.groupby("week_of_year")["commit_count"]
+        k = groups_df.ngroups
+        N = len(weekly)
 
-        print("\n=== COMMIT FREQUENCY CORRELATION ===")
-        print("corr(week_of_year, commit_count):      ", corr_week_of_year)
-        print("corr(week_index,  commit_count):       ", corr_week_index)
+        if k < 2 or N <= k:
+            result = empty.copy()
+            result["n_weeks"] = int(N)
+            result["n_week_groups"] = int(k)
+            return result
 
-        return {
-            "commit_corr_week_of_year": corr_week_of_year,
-            "commit_corr_week_index": corr_week_index,
-        }
+        groups = [g.values.astype(float) for _, g in groups_df]
+        group_sizes = [len(g) for g in groups]
 
-    # ---------- 2) WEEK vs PR -> COMMIT LEAD TIME ----------
+        data = np.concatenate(groups)
+        N_check = data.size
+        if N_check != N:
+            N = N_check
 
-    def _pr_to_commit_correlation(
-        self, commits: pd.DataFrame, prs: pd.DataFrame
-    ) -> Dict[str, Any]:
-        if commits.empty or prs.empty:
-            print("[CommitCorrelationCore] No data for PR->commit analysis.")
-            return {
-                "pr_corr_week_of_year": None,
-                "pr_corr_week_index": None,
-            }
+        ranks = pd.Series(data).rank(method="average").to_numpy()
 
-        # Extract PR number from merge commit message
-        # Message pattern: "Merge pull request #123 ..."
-        commits["pr_number"] = (
-            commits["message"]
-            .str.extract(r"Merge pull request #(\d+)", expand=False)
-            .astype("Int64")
-        )
+        rank_sums = []
+        start = 0
+        for size in group_sizes:
+            end = start + size
+            rank_sums.append(ranks[start:end].sum())
+            start = end
 
-        merges = commits.dropna(subset=["pr_number"])
+        numerator = 0.0
+        for R_i, n_i in zip(rank_sums, group_sizes):
+            numerator += (R_i ** 2) / n_i
 
-        if merges.empty:
-            print("[CommitCorrelationCore] No merge commits with PR numbers.")
-            return {
-                "pr_corr_week_of_year": None,
-                "pr_corr_week_index": None,
-            }
+        H = (12.0 / (N * (N + 1))) * numerator - 3.0 * (N + 1)
 
-        # Join on (repo_id, pr_number)
-        merged = merges.merge(
-            prs,
-            how="inner",
-            on=["repo_id", "pr_number"],
-            suffixes=("_commit", "_pr"),
-        )
+        _, tie_counts = np.unique(data, return_counts=True)
+        denom = (N ** 3 - N)
+        if denom != 0:
+            tie_correction = 1.0 - ((tie_counts ** 3 - tie_counts).sum() / denom)
+        else:
+            tie_correction = 1.0
 
-        if merged.empty:
-            print("[CommitCorrelationCore] No matching PRs and merge commits.")
-            return {
-                "pr_corr_week_of_year": None,
-                "pr_corr_week_index": None,
-            }
+        if tie_correction > 0:
+            H_corrected = H / tie_correction
+        else:
+            H_corrected = H
 
-        merged["commit_date"] = pd.to_datetime(merged["commit_date"])
-        merged["pr_created_at"] = pd.to_datetime(merged["pr_created_at"])
+        df_chi = k - 1
+        p_value = None
+        try:
+            from scipy.stats import chi2
+            p_value = float(1.0 - chi2.cdf(H_corrected, df_chi))
+        except Exception:
+            p_value = None
 
-        merged["lead_time_hours"] = (
-            merged["commit_date"] - merged["pr_created_at"]
-        ).dt.total_seconds() / 3600.0
+        eta_sq = None
+        if N > k:
+            eta_raw = (H_corrected - (k - 1)) / (N - k)
+            eta_sq = float(max(0.0, min(1.0, eta_raw)))
 
-        merged = merged.dropna(subset=["lead_time_hours"])
-
-        if merged.empty:
-            print("[CommitCorrelationCore] No valid lead_time_hours.")
-            return {
-                "pr_corr_week_of_year": None,
-                "pr_corr_week_index": None,
-            }
-
-        iso = merged["commit_date"].dt.isocalendar()
-        merged["year"] = iso.year
-        merged["week_of_year"] = iso.week
-
-        weekly = (
-            merged.groupby(["year", "week_of_year"], as_index=False)
-            .agg(avg_lead_time_hours=("lead_time_hours", "mean"))
-            .sort_values(["year", "week_of_year"])
-        )
-
-        weekly["week_index"] = np.arange(1, len(weekly) + 1)
-
-        corr_week_of_year = self._corr_safe(
-            weekly["week_of_year"], weekly["avg_lead_time_hours"]
-        )
-        corr_week_index = self._corr_safe(
-            weekly["week_index"], weekly["avg_lead_time_hours"]
-        )
-
-        print("\n=== PR → COMMIT LEAD TIME CORRELATION ===")
-        print("corr(week_of_year, avg_lead_time_hours):", corr_week_of_year)
-        print("corr(week_index,   avg_lead_time_hours):", corr_week_index)
+        has_dep = bool(p_value is not None and p_value < alpha)
 
         return {
-            "pr_corr_week_of_year": corr_week_of_year,
-            "pr_corr_week_index": corr_week_index,
+            "kw_h_stat": float(H_corrected),
+            "kw_p_value": p_value,
+            "eta_squared": eta_sq,
+            "has_week_dependency": has_dep,
+            "n_weeks": int(N),
+            "n_week_groups": int(k),
+            "total_commits": int(len(df)),
         }
 
-    # ---------- PUBLIC API ----------
 
     def run_analysis(self) -> Dict[str, Any]:
         commits = self.repo.load_commits()
-        prs = self.repo.load_pull_requests()
 
-        commit_corr = self._commit_frequency_correlation(commits)
-        pr_corr = self._pr_to_commit_correlation(commits, prs)
+        if commits.empty:
+            print("[CommitCorrelationCore] No commit data found.")
+            return {"error": "No commit data found."}
 
-        result = {**commit_corr, **pr_corr}
+        repo_ids = sorted(set(commits["repo_id"].dropna().unique()))
 
-        print("\n=== CORRELATION SUMMARY ===")
-        print(result)
+        all_results: List[Dict[str, Any]] = []
 
-        # Save one global result row into DB
-        self.repo.save_correlation_result(result)
+        def analyze_one_repo(repo_id: int) -> Dict[str, Any]:
+            repo_commits = commits[commits["repo_id"] == repo_id].copy()
 
-        return result
+            print(f"\n=== RUNNING KRUSKAL-WALLIS FOR REPO {repo_id} ===")
+
+            stats = self._kruskal_wallis_week_vs_commits(repo_commits)
+
+            result = {
+                "repo_id": int(repo_id),
+                **stats,
+            }
+
+            print("\n=== KRUSKAL-WALLIS SUMMARY FOR REPO", repo_id, "===")
+            print(result)
+
+            self.repo.save_correlation_result(result)
+            return result
+
+        if self.n_workers and self.n_workers > 1:
+            print(f"[CommitCorrelationCore] Running in parallel with {self.n_workers} workers.")
+            with ThreadPoolExecutor(max_workers=self.n_workers) as executor:
+                for result in executor.map(analyze_one_repo, repo_ids):
+                    all_results.append(result)
+        else:
+            print("[CommitCorrelationCore] Running in single-threaded mode.")
+            for repo_id in repo_ids:
+                result = analyze_one_repo(repo_id)
+                all_results.append(result)
+
+        print(
+            f"[CommitCorrelationCore] Finished Kruskal–Wallis analysis for "
+            f"{len(all_results)} repos."
+        )
+
+        return {
+            "results": all_results,
+            "repos_analyzed": len(all_results),
+        }
 
 
 class CommitCorrelationAnalyzer:
-    """
-    High-level class used by main.py:
-
-        commit_corr_analyzer = CommitCorrelationAnalyzer(database_url, workers)
-        corr_results = commit_corr_analyzer.analyze()
-    """
-
     def __init__(self, database_url: str, n_workers: int | None = None):
         self.database_url = database_url
         self.n_workers = n_workers
 
-        # create correlation tables (commit_correlation_result)
         uow = UnitOfWork(database_url)
         uow.create_correlation_tables()
 
         repo = CorrelationRepository(database_url)
-        self.core = CommitCorrelationCore(repo)
+        self.core = CommitCorrelationCore(repo, n_workers=n_workers)
 
     def analyze(self) -> Dict[str, Any]:
         return self.core.run_analysis()
