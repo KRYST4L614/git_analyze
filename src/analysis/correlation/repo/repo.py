@@ -1,4 +1,3 @@
-# src/analysis/correlation/repo/repo.py
 from contextlib import contextmanager
 
 from sqlalchemy import text
@@ -9,9 +8,9 @@ from src.analysis.correlation.models.models import CommitCorrelationResult
 
 
 class CorrelationRepository:
+
     def __init__(self, database_url: str | None = None):
         self.database_url = database_url
-        # Reuse one UnitOfWork / engine
         self._uow = UnitOfWork(self.database_url)
 
     @contextmanager
@@ -26,19 +25,19 @@ class CorrelationRepository:
         finally:
             session.close()
 
-    # ----------- LOADERS -----------
-
     def load_commits(self) -> pd.DataFrame:
         """
-        Load minimal commit info:
-        repo_id, commit_date, message.
+        Загружаем минимальную информацию о коммитах:
+        repo_id, commit_date.
+
+        commit_date нужен, чтобы вычислить неделю (ISO week)
+        и агрегировать частоту коммитов по неделям.
         """
         with self.session_scope() as session:
             query = text("""
                 SELECT
                     repo_id,
-                    commit_date,
-                    message
+                    commit_date
                 FROM commits
                 WHERE commit_date IS NOT NULL
             """)
@@ -46,53 +45,25 @@ class CorrelationRepository:
             print(f"[CorrelationRepository] Loaded {len(df)} commits")
             return df
 
-    def load_pull_requests(self) -> pd.DataFrame:
-        """
-        Load minimal PR info needed for lead time:
-        - id
-        - repo_id
-        - number
-        - created_at (for start of lead time)
-        - merged_at (optional; we’ll use commit_date as end)
-        """
-        with self.session_scope() as session:
-            query = text("""
-                SELECT
-                    id AS pr_id,
-                    repo_id,
-                    number AS pr_number,
-                    author_id AS pr_author_id,
-                    created_at AS pr_created_at,
-                    merged_at AS pr_merged_at
-                FROM pull_requests
-                WHERE created_at IS NOT NULL
-            """)
-            df = pd.read_sql(query, session.connection())
-            print(f"[CorrelationRepository] Loaded {len(df)} pull_requests")
-            return df
-
-    # ----------- SAVER -----------
-
     def save_correlation_result(self, result_dict: dict) -> None:
         """
-        Save a correlation result row for a single repository.
-        We KEEP history; no deletes.
+        Сохраняем одну строку результата анализа для одного репозитория.
+        Историю не затираем: таблица будет накапливать результаты.
         """
         with self.session_scope() as session:
             row = CommitCorrelationResult(
                 repo_id=result_dict.get("repo_id"),
-                commit_corr_week_of_year=result_dict.get("commit_corr_week_of_year"),
-                commit_corr_week_index=result_dict.get("commit_corr_week_index"),
-                pr_corr_week_of_year=result_dict.get("pr_corr_week_of_year"),
-                pr_corr_week_index=result_dict.get("pr_corr_week_index"),
-                n_weeks_commits=result_dict.get("n_weeks_commits"),
+                kw_h_stat=result_dict.get("kw_h_stat"),
+                kw_p_value=result_dict.get("kw_p_value"),
+                eta_squared=result_dict.get("eta_squared"),
+                has_week_dependency=result_dict.get("has_week_dependency"),
+                n_weeks=result_dict.get("n_weeks"),
+                n_week_groups=result_dict.get("n_week_groups"),
                 total_commits=result_dict.get("total_commits"),
-                n_weeks_pr_lead=result_dict.get("n_weeks_pr_lead"),
-                n_pr_merges_used=result_dict.get("n_pr_merges_used"),
             )
 
             session.add(row)
             print(
-                f"[CorrelationRepository] Saved correlation result "
+                "[CorrelationRepository] Saved Kruskal–Wallis result "
                 f"to database for repo_id={row.repo_id}"
             )

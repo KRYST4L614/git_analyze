@@ -1,51 +1,84 @@
-from sqlalchemy import Column, Integer, Float, Date, DateTime, Boolean, String
-from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime
 
-Base = declarative_base()
+from sqlalchemy import (
+    Column,
+    Integer,
+    Float,
+    String,
+    Boolean,
+    DateTime,
+    ForeignKey,
+)
+
+# 👇 Берём общий Base, где уже описана таблица repositories
+from src.data.models.models import Base
 
 
-class RepoActivityForecast(Base):
+class RepositoryYearActivityStats(Base):
     """
-    Daily activity forecast + anomaly flags (DOW+MAD v3).
+    Year-level stats for a repository's activity.
 
-    Semantics:
-      - activity_date: date (per day, per repo)
-      - actual_commits: observed commit count that day
-      - predicted_commits: DOW-based baseline (expected commits for that day)
-      - residual: actual_commits - predicted_commits
-      - z_score: robust modified z-score (based on log1p counts + MAD)
-      - is_anomaly: True if |z_score| >= threshold and |residual| >= min_abs_diff
-      - model_type: 'dow_mad_v3'
-      - seasonal_periods: unused (kept for backward DB compatibility)
+    One row per (repo_id, year).
     """
-
-    __tablename__ = "repo_activity_forecast"
+    __tablename__ = "repository_year_activity_stats"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
 
-    repo_id = Column(Integer, nullable=False, index=True)
-    activity_date = Column(Date, nullable=False, index=True)
+    repo_id = Column(Integer, ForeignKey("repositories.id"), index=True, nullable=False)
+    year = Column(Integer, index=True, nullable=False)
 
-    actual_commits = Column(Integer, nullable=False)
-    predicted_commits = Column(Float, nullable=True)
-    residual = Column(Float, nullable=True)
-    z_score = Column(Float)  # MAD-based modified z-score
+    total_commits = Column(Integer, nullable=False)
+    active_weeks = Column(Integer, nullable=False)
+    first_week = Column(Integer, nullable=True)
+    last_week = Column(Integer, nullable=True)
+    weeks_in_range = Column(Integer, nullable=False)
+    active_weeks_ratio = Column(Float, nullable=False)
+    is_alive = Column(Boolean, nullable=False, index=True)
 
-    is_anomaly = Column(Boolean, default=False)
-
-    # For backward compatibility; now always 'dow_mad_v3'
-    model_type = Column(String(50), default="dow_mad_v3")
-    seasonal_periods = Column(Integer, nullable=True)
-
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     def __repr__(self) -> str:
         return (
-            f"<RepoActivityForecast(repo_id={self.repo_id}, "
-            f"activity_date={self.activity_date}, "
-            f"actual_commits={self.actual_commits}, "
-            f"predicted_commits={self.predicted_commits}, "
-            f"z_score={self.z_score}, "
-            f"is_anomaly={self.is_anomaly})>"
+            f"<RepositoryYearActivityStats("
+            f"repo_id={self.repo_id}, year={self.year}, "
+            f"total_commits={self.total_commits}, active_weeks={self.active_weeks}, "
+            f"first_week={self.first_week}, last_week={self.last_week}, "
+            f"weeks_in_range={self.weeks_in_range}, "
+            f"active_weeks_ratio={self.active_weeks_ratio:.3f}, "
+            f"is_alive={self.is_alive}"
+            f")>"
+        )
+
+
+class RepositoryWeeklyActivityAnomaly(Base):
+    """
+    Weekly anomalies for a repository's activity.
+
+    One row per anomalous (repo_id, year, iso_week).
+    """
+    __tablename__ = "repository_weekly_activity_anomalies"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    repo_id = Column(Integer, ForeignKey("repositories.id"), index=True, nullable=False)
+    year = Column(Integer, index=True, nullable=False)
+    iso_week = Column(Integer, index=True, nullable=False)
+
+    commit_count = Column(Integer, nullable=False)
+    z_score = Column(Float, nullable=False)
+    direction = Column(String(10), nullable=False)  # "high" or "low"
+
+    # Context fields (duplicated for easier querying)
+    total_commits_year = Column(Integer, nullable=False)
+    active_weeks_year = Column(Integer, nullable=False)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    def __repr__(self) -> str:
+        return (
+            f"<RepositoryWeeklyActivityAnomaly("
+            f"repo_id={self.repo_id}, year={self.year}, week={self.iso_week}, "
+            f"commit_count={self.commit_count}, z_score={self.z_score:.3f}, "
+            f"direction={self.direction}"
+            f")>"
         )
