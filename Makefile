@@ -1,7 +1,13 @@
 DEFAULT_BACKUP := data/raw/dataset_raw.sql
 
+# Install dependencies
+install:
+	@echo "Installing Python dependencies..."
+	pip install -r requirements.txt
+	@echo "✓ Dependencies installed successfully"
+
 # Full pipeline: collect + analyze
-all:
+all: install
 	python src/main.py --token $(or $(token),$(GITHUB_TOKEN)) \
 	               --repos $(or $(repos),50) \
 	               --workers $(or $(workers),10) \
@@ -9,14 +15,14 @@ all:
 	               --database-url $(or $(database_url),postgresql://postgres:password@localhost/1)
 
 # Dataset collection only
-collect:
+collect: install
 	python src/main.py collect --token $(or $(token),$(GITHUB_TOKEN)) \
 	               --repos $(or $(repos),50) \
 	               --workers $(or $(workers),10) \
 	               --database-url $(or $(database_url),postgresql://postgres:password@localhost/1)
 
 # Analysis only
-analyze:
+analyze: install
 	python src/main.py analyze --database-url $(or $(database_url),postgresql://postgres:password@localhost/1) \
 	                       --workers $(or $(workers),4)
 
@@ -27,6 +33,7 @@ restore:
 # Help
 help:
 	@echo "Available commands:"
+	@echo "  make install       - Install Python dependencies"
 	@echo "  make all          - Run full pipeline: collect + analyze"
 	@echo "  make collect  - Collect GitHub dataset only"
 	@echo "  make analyze      - Run analysis only"
@@ -38,4 +45,4 @@ help:
 	@echo "  make analyze workers=4"
 	@echo "  make restore file=backups/custom.sql"
 
-.PHONY: all get_dataset analyze restore help
+.PHONY: all get_dataset analyze restore help install

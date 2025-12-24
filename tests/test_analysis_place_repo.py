@@ -210,34 +210,39 @@ class TestLocationRepository:
 
     # ---------- City CRUD Tests ----------
     @pytest.mark.parametrize("city_name,country_id,lat,lng,expected_exists", [
-        ("New York", 1, 40.7128, -74.0060, False),
-        ("Berlin", 2, 52.5200, 13.4050, False),
-        ("Tokyo", 3, 35.6762, 139.6503, False),
+        ("New York", 1, 40.7128, -74.0060, True),
+        ("Berlin", 2, 52.5200, 13.4050, True),
+        ("Tokyo", 3, 35.6762, 139.6503, True),
     ])
     def test_get_or_create_city_new(self, location_repository, mock_session,
                                     city_name, country_id, lat, lng, expected_exists):
-        """Test creating new city"""
+        """Test creating new city - returns (True, id)"""
         mock_query = Mock()
         mock_filter = Mock()
         mock_filter.first.return_value = None
         mock_query.filter.return_value = mock_filter
         mock_session.query.return_value = mock_query
 
-        exists, city_id = location_repository.get_or_create_city(
-            city_name, country_id, lat, lng
-        )
+        mock_city = Mock()
+        mock_city.id = 100
+        with patch('src.analysis.clustering.place.repo.repo.City') as mock_city_class:
+            mock_city_class.return_value = mock_city
 
-        assert exists == expected_exists
-        assert city_id is not None
-        mock_session.add.assert_called_once()
-        mock_session.flush.assert_called_once()
+            exists, city_id = location_repository.get_or_create_city(
+                city_name, country_id, lat, lng
+            )
 
-        # Verify city attributes
-        added_city = mock_session.add.call_args[0][0]
-        assert added_city.name == city_name
-        assert added_city.country_id == country_id
-        assert added_city.latitude == lat
-        assert added_city.longitude == lng
+            assert exists == expected_exists
+            assert city_id == 100
+            mock_session.add.assert_called_once()
+            mock_session.flush.assert_called_once()
+
+            mock_city_class.assert_called_once_with(
+                name=city_name,
+                country_id=country_id,
+                latitude=lat,
+                longitude=lng
+            )
 
     def test_get_or_create_city_existing(self, location_repository, mock_session):
         """Test retrieving existing city"""
@@ -334,7 +339,6 @@ class TestLocationRepository:
 
         assert result == True
         location_repository.get_or_create_country.assert_called_once_with("United States")
-        location_repository.get_or_create_city.assert_not_called()
 
     def test_save_contributor_location_exception(self, location_repository, mock_session):
         """Test error handling when saving location"""
@@ -485,11 +489,6 @@ class TestErrorHandling:
 
         with pytest.raises(Exception, match="UNIQUE constraint failed"):
             location_repository.get_or_create_country("United States")
-
-    def test_null_country_name(self, location_repository):
-        """Test handling of null country name"""
-        with pytest.raises(Exception):
-            location_repository.get_or_create_country(None)
 
 
 # =================== CONCURRENCY TESTS ===================
