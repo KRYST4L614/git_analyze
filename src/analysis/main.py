@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import argparse
 import os
 import sys
@@ -13,7 +12,7 @@ def setup_imports():
 def main():
     setup_imports()
 
-    from src.analysis import RepositoryAnalyzer, LocationAnalyzer
+    from src.analysis import LocationAnalyzer, RepositoryAnalyzer
 
     parser = argparse.ArgumentParser(
         description='Analyze GitHub repositories and contributors'
@@ -21,7 +20,7 @@ def main():
 
     parser.add_argument(
         '--database-url',
-        default='postgresql://postgres:password@localhost/github_analysis',
+        default='jdbc:postgresql://postgres:5432/github_analysis',
         help='PostgreSQL database URL'
     )
 
@@ -35,7 +34,34 @@ def main():
         '--analyze',
         action='store_true',
         default=True,
-        help='Analyze'
+        help='Run all analyses'
+    )
+
+    parser.add_argument(
+        '--type',
+        action='store_true',
+        default=True,
+        help='Make type clustering for repositories'
+    )
+
+    parser.add_argument(
+        '--location',
+        action='store_true',
+        default=True,
+        help='Make location clustering for repositories'
+    )
+
+    parser.add_argument(
+        '--spark-master',
+        default='spark://spark-master:7077',
+        help='Spark master URL'
+    )
+
+    parser.add_argument(
+        '--spark-partitions',
+        type=int,
+        default=10,
+        help='Number of Spark partitions'
     )
 
     args = parser.parse_args()
@@ -44,27 +70,33 @@ def main():
         print("Starting GitHub Data Analysis")
         print("=" * 40)
 
-        # Анализ репозиториев
         if args.analyze:
-            print("\nREPOSITORY TYPE ANALYSIS")
-            print("-" * 25)
-            repo_analyzer = RepositoryAnalyzer(args.database_url, args.workers)
-            repo_results = repo_analyzer.analyze()
+            if args.type:
+                print("\nSPARK REPOSITORY TYPE ANALYSIS")
+                print("-" * 30)
+                spark_analyzer = RepositoryAnalyzer(
+                    database_url=args.database_url,
+                    spark_master=args.spark_master,
+                    n_partitions=args.spark_partitions
+                )
+                repo_results = spark_analyzer.analyze()
 
-            if 'error' in repo_results:
-                print(f"Repository analysis failed: {repo_results['error']}")
-            else:
-                print("Repository analysis completed successfully.")
+                if 'error' in repo_results:
+                    print(f"Spark repository analysis failed: {repo_results['error']}")
+                else:
+                    print("Spark repository analysis completed successfully.")
 
-            print("\nCONTRIBUTOR LOCATION ANALYSIS")
-            print("-" * 30)
-            location_analyzer = LocationAnalyzer(args.database_url, args.workers)
-            location_results = location_analyzer.analyze()
+                spark_analyzer.stop()
+            if args.location:
+                print("\nCONTRIBUTOR LOCATION ANALYSIS")
+                print("-" * 30)
+                location_analyzer = LocationAnalyzer(args.database_url, args.workers)
+                location_results = location_analyzer.analyze()
 
-            if 'error' in location_results:
-                print(f"Location analysis failed: {location_results['error']}")
-            else:
-                print("Location analysis completed successfully.")
+                if 'error' in location_results:
+                    print(f"Location analysis failed: {location_results['error']}")
+                else:
+                    print("Location analysis completed successfully.")
 
         print("\n" + "=" * 40)
         print("All analyses completed successfully!")

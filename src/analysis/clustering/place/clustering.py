@@ -1,199 +1,183 @@
-import concurrent
-import multiprocessing as mp
-import warnings
-from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, Optional, Any
+import logging
+from typing import Dict, Any
 
-import cachetools
-from geopy.exc import GeocoderTimedOut, GeocoderServiceError
-from geopy.geocoders import Nominatim
+from pyspark.sql import DataFrame, functions as F
+from pyspark.sql.types import *
 
+from src.analysis.spark.config import SparkConfig
 from src.analysis.clustering.place.repo.repo import LocationRepository
-from src.storage.unit_of_work import UnitOfWork
+from dependencies.src.geo_udf_functions import (
+    geocode_location_udf,
+    extract_country_udf,
+    extract_city_udf
+)
 
-warnings.filterwarnings('ignore')
-
-
-class GeoLocationService:
-    def __init__(self, cache_size: int = 1000):
-        self.geolocator = Nominatim(user_agent="contributor_analysis")
-        self.cache = cachetools.LRUCache(maxsize=cache_size)
-        self.last_request_time = 0
-
-    def geocode_location(self, location_str: str) -> Optional[Dict]:
-        if not location_str or location_str.lower() in ['', 'unknown', 'none', 'null']:
-            return None
-
-        cache_key = location_str.lower().strip()
-        if cache_key in self.cache:
-            return self.cache[cache_key]
-
-        try:
-            location = self.geolocator.geocode(
-                location_str,
-                addressdetails=True,
-                language='en',
-                timeout=60,
-            )
-
-            if location:
-                result = {
-                    'latitude': location.latitude,
-                    'longitude': location.longitude,
-                    'address': location.raw.get('address', {}),
-                    'raw': location.raw
-                }
-                self.cache[cache_key] = result
-                return result
-
-        except (GeocoderTimedOut, GeocoderServiceError) as e:
-            print(f"Geocoding error for '{location_str}': {e}")
-        except Exception as e:
-            print(f"Unexpected error for '{location_str}': {e}")
-
-        return None
-
-    def extract_country_from_geodata(self, geodata: Dict) -> str:
-        if not geodata:
-            return None
-
-        address = geodata.get('address', {})
-        country = address.get('country', '')
-
-        if country:
-            return country.lower()
-
-        return None
-
-    def extract_city_from_geodata(self, geodata: Dict) -> str:
-        if not geodata:
-            return None
-
-        address = geodata.get('address', {})
-
-        city_fields = ['city', 'town', 'village', 'municipality']
-        for field in city_fields:
-            if field in address and address[field]:
-                return address[field].lower()
-
-        return None
+logger = logging.getLogger(__name__)
 
 
-class ContributorLocationClustering:
-    def __init__(self, database_url: str, location_repo: LocationRepository, n_workers: int = None):
+class LocationClassifier:
+    def __init__(self, database_url: str, spark_master: str = None, n_partitions: int = 10):
         self.database_url = database_url
-        self.location_repo = location_repo
-        self.n_workers = n_workers or mp.cpu_count()
-        self.geo_service = GeoLocationService()
+        self.n_partitions = n_partitions
 
-    def _process_contributor_chunk(self, contributor_chunk, database_url, chunk_id):
+        self.spark = SparkConfig.get_spark_session(
+            app_name="GitHubLocationClassifier",
+            spark_master=spark_master,
+            n_partitions=n_partitions
+        )
 
-        uow = UnitOfWork(database_url)
-        self.location_repo.uow = uow
+        self.repository = LocationRepository(
+            spark_session=self.spark,
+            database_url=database_url
+        )
 
-        geo_service = GeoLocationService()
+        self._register_udfs()
 
-        successful_count = 0
+    def _register_udfs(self):
+        self.geocode_udf = F.udf(geocode_location_udf,
+                                 StructType([
+                                     StructField("latitude", DoubleType()),
+                                     StructField("longitude", DoubleType()),
+                                     StructField("country", StringType()),
+                                     StructField("city", StringType())
+                                 ]))
 
+        self.extract_country_udf = F.udf(extract_country_udf, StringType())
+        self.extract_city_udf = F.udf(extract_city_udf, StringType())
+
+    def process_contributor_locations(self) -> DataFrame:
+        logger.info("Starting Spark-based contributor location analysis...")
+
+        contributors_df = self.repository.load_contributor_location_data(self.n_partitions)
+
+        logger.info(f"Loaded {contributors_df.count()} contributors with location data")
+
+        processed_df = (contributors_df
+                        .filter(F.col("location").isNotNull() & (F.col("location") != ""))
+                        .withColumn("geodata", self.geocode_udf(F.col("location")))
+                        .withColumn("country_name", self.extract_country_udf(F.col("geodata")))
+                        .withColumn("city_name", self.extract_city_udf(F.col("geodata")))
+                        .withColumn("latitude", F.col("geodata.latitude"))
+                        .withColumn("longitude", F.col("geodata.longitude"))
+                        .withColumn("confidence",
+                                    F.when(F.col("country_name").isNotNull(), 1.0).otherwise(0.0))
+                        .withColumn("original_location", F.col("location"))
+                        .drop("geodata", "location")
+                        )
+
+        successful_df = processed_df.filter(F.col("country_name").isNotNull())
+
+        logger.info(f"Successfully geocoded {successful_df.count()} locations")
+
+        return successful_df.cache()
+
+    def run_analysis(self) -> Dict[str, Any]:
         try:
-            print(f"Chunk {chunk_id}: Processing {len(contributor_chunk)} contributors")
+            logger.info("Starting Spark contributor location analysis...")
 
-            for _, row in contributor_chunk.iterrows():
-                contributor_id = row['contributor_id']
-                original_location = str(row['location'] or '')
+            results_df = self.process_contributor_locations()
 
-                if not original_location or original_location.strip() == '':
-                    continue
+            analysis = self._analyze_results(results_df)
 
-                geodata = geo_service.geocode_location(original_location)
+            self.repository.save_contributor_locations(results_df)
 
-                if not geodata:
-                    continue
-
-                country = geo_service.extract_country_from_geodata(geodata)
-                city = geo_service.extract_city_from_geodata(geodata)
-
-                if not country:
-                    continue
-
-                try:
-                    success = self.location_repo.save_contributor_location(
-                        contributor_id=contributor_id,
-                        original_location=original_location,
-                        country_name=country,
-                        city_name=city,
-                        latitude=geodata.get('latitude'),
-                        longitude=geodata.get('longitude')
-                    )
-                    if success:
-                        successful_count += 1
-                        print(f"Chunk {chunk_id}: ✓ Saved location for contributor {contributor_id}: {country}, {city}")
-                except Exception as e:
-                    print(f"Chunk {chunk_id}: ✗ Error saving location for contributor {contributor_id}: {e}")
-
-            print(f"Chunk {chunk_id} completed: {successful_count}/{len(contributor_chunk)} locations determined")
-            return successful_count
-
-        except Exception as e:
-            print(f"Chunk {chunk_id}: Error processing chunk: {e}")
-            return 0
-        finally:
-            uow.dispose()
-
-    def run_location_analysis(self) -> Dict[str, Any]:
-        print("Starting contributor location analysis...")
-
-        try:
-            location_repo = LocationRepository(self.database_url)
-            df = location_repo.load_contributor_location_data()
-
-            if df.empty:
-                return {"error": "No contributor data available"}
-
-            print(f"Loaded {len(df)} contributors")
-
-            chunk_size = max(1, len(df) // self.n_workers)
-            contributor_chunks = [df[i:i + chunk_size] for i in range(0, len(df), chunk_size)]
-
-            print(f"Split into {len(contributor_chunks)} chunks")
-
-            total_successful = 0
-
-            with ThreadPoolExecutor(max_workers=self.n_workers) as executor:
-                future_to_chunk = {
-                    executor.submit(
-                        self._process_contributor_chunk,
-                        chunk, self.database_url, chunk_id
-                    ): chunk_id for chunk_id, chunk in enumerate(contributor_chunks)
-                }
-
-                for future in concurrent.futures.as_completed(future_to_chunk):
-                    chunk_id = future_to_chunk[future]
-                    try:
-                        result = future.result()
-                        total_successful += result
-                        print(f"Chunk {chunk_id} finished: {result} successful locations")
-                    except Exception as e:
-                        print(f"Chunk {chunk_id}: Error in future: {e}")
-
-            print(f"Completed: {total_successful}/{len(df)} locations determined")
+            self._print_results_summary(analysis)
 
             return {
-                "successful_locations": total_successful,
-                "total_contributors": len(df)
+                'analysis': analysis,
+                'processed_contributors': analysis['total_contributors'],
+                'successful_locations': analysis['successful_locations'],
+                'status': 'success'
             }
 
         except Exception as e:
-            print(f"Error during location analysis: {e}")
-            return {"error": str(e)}
+            logger.error(f"Error during Spark location analysis: {e}")
+            return {
+                'error': str(e),
+                'status': 'error'
+            }
+        finally:
+            if 'results_df' in locals():
+                results_df.unpersist()
+                logger.info("Cleared cached DataFrames")
+
+    def _analyze_results(self, results_df: DataFrame) -> Dict[str, Any]:
+
+        country_stats = (results_df
+                         .groupBy("country_name")
+                         .agg(
+            F.count("contributor_id").alias("count"),
+            F.avg("confidence").alias("avg_confidence")
+        )
+                         .orderBy(F.desc("count"))
+                         )
+
+        total_stats = results_df.agg(
+            F.count("contributor_id").alias("total_contributors"),
+            F.avg("confidence").alias("avg_confidence"),
+            F.count_distinct("country_name").alias("unique_countries"),
+            F.count_distinct("city_name").alias("unique_cities")
+        ).collect()[0]
+
+        top_countries = {row['country_name']: row['count']
+                         for row in country_stats.limit(10).collect()}
+
+        return {
+            'total_contributors': total_stats['total_contributors'],
+            'successful_locations': total_stats['total_contributors'],
+            'unique_countries': total_stats['unique_countries'],
+            'unique_cities': total_stats['unique_cities'],
+            'avg_confidence': float(total_stats['avg_confidence']),
+            'top_countries': top_countries
+        }
+
+    def _print_results_summary(self, analysis: Dict[str, Any]):
+        print("\n" + "=" * 50)
+        print("SPARK LOCATION ANALYSIS RESULTS SUMMARY")
+        print("=" * 50)
+
+        print(f"\nTotal contributors processed: {analysis['total_contributors']}")
+        print(f"Successfully geocoded: {analysis['successful_locations']}")
+        print(f"Unique countries: {analysis['unique_countries']}")
+        print(f"Unique cities: {analysis['unique_cities']}")
+        print(f"Average confidence: {analysis['avg_confidence']:.3f}")
+
+        print(f"\nTop countries:")
+        for country, count in analysis['top_countries'].items():
+            percentage = (count / analysis['total_contributors']) * 100
+            print(f"  {country:<20}: {count:>6} contributors ({percentage:>5.1f}%)")
+
+    def stop(self):
+        if hasattr(self, 'spark'):
+            self.spark.stop()
+            logger.info("Spark session stopped")
 
 
 class LocationAnalyzer:
-    def __init__(self, database_url: str, n_workers: int = None):
-        UnitOfWork(database_url).create_location_tables()
-        location_repo = LocationRepository(database_url)
-
-        self.analyzer = ContributorLocationClustering(database_url, location_repo, n_workers)
+    def __init__(self, database_url: str, spark_master: str = None, n_partitions: int = 10):
+        self.database_url = database_url
+        self.spark_master = spark_master
+        self.n_partitions = n_partitions
+        self.classifier = None
 
     def analyze(self) -> Dict:
-        return self.analyzer.run_location_analysis()
+        try:
+            logger.info(f"Initializing Spark location classifier with master: {self.spark_master}")
+            self.classifier = LocationClassifier(
+                database_url=self.database_url,
+                spark_master=self.spark_master,
+                n_partitions=self.n_partitions
+            )
+
+            return self.classifier.run_analysis()
+
+        except Exception as e:
+            logger.error(f"Error in SparkLocationAnalyzer: {e}")
+            return {
+                'error': str(e),
+                'status': 'error'
+            }
+
+    def stop(self):
+        if self.classifier:
+            self.classifier.stop()

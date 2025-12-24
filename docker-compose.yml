@@ -1,26 +1,36 @@
 version: '3.8'
 
+# Расширения для Superset
+x-superset-user: &superset-user root
+x-superset-volumes: &superset-volumes
+  # /app/pythonpath_docker will be appended to the PYTHONPATH in the final container
+  - ./docker:/app/docker
+  - superset_home:/app/superset_home
+  - ./tests:/app/tests
+
 services:
+  # GitHub Analysis Services
   postgres:
     image: postgres:15-alpine
     container_name: github_analysis_postgres
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-github_analysis}
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_DB: ${GITHUB_POSTGRES_DB:-github_analysis}
+      POSTGRES_USER: ${GITHUB_POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${GITHUB_POSTGRES_PASSWORD:-password}
       POSTGRES_INITDB_ARGS: "--encoding=UTF8 --lc-collate=C --lc-ctype=C"
     command: >
       postgres 
       -c max_connections=5000
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "${GITHUB_POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./migrations:/docker-entrypoint-initdb.d
     networks:
       - github_network
+      - superset_network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      test: ["CMD-SHELL", "pg_isready -U ${GITHUB_POSTGRES_USER:-postgres}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -30,25 +40,304 @@ services:
     image: dpage/pgadmin4:latest
     container_name: github_analysis_pgadmin
     environment:
-      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@github-analysis.com}
-      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
+      PGADMIN_DEFAULT_EMAIL: ${GITHUB_PGADMIN_EMAIL:-admin@github-analysis.com}
+      PGADMIN_DEFAULT_PASSWORD: ${GITHUB_PGADMIN_PASSWORD:-admin}
     ports:
-      - "${PGADMIN_PORT:-8080}:80"
+      - "${GITHUB_PGADMIN_PORT:-8080}:80"
     volumes:
       - pgadmin_data:/var/lib/pgadmin
     networks:
       - github_network
+      - superset_network
     depends_on:
       - postgres
     profiles:
       - admin
 
+  # Spark services
+  spark-master:
+    build:
+      context: .
+      dockerfile: src/analysis/spark/Dockerfile
+    container_name: github_analysis_spark_master
+    hostname: spark-master
+    command: >
+      /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
+      --host spark-master
+    ports:
+      - "${SPARK_UI_PORT:-8081}:8080"
+      - "${SPARK_MASTER_PORT:-7077}:7077"
+    networks:
+      github_network:
+        aliases:
+          - spark-master
+    environment:
+      SPARK_MASTER_HOST: spark-master
+      SPARK_MASTER_PORT: 7077
+      SPARK_MASTER_WEBUI_PORT: 8080
+      SPARK_LOCAL_IP: spark-master
+
+  spark-worker-1:
+    build:
+      context: .
+      dockerfile: src/analysis/spark/Dockerfile
+    container_name: github_analysis_spark_worker_1
+    hostname: spark-worker-1
+    command: >
+      /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker
+      spark://spark-master:${SPARK_MASTER_PORT:-7077}
+      --cores 2
+      --memory 2g
+    depends_on:
+      - spark-master
+    networks:
+      github_network:
+        aliases:
+          - spark-worker-1
+    environment:
+      SPARK_WORKER_CORES: 2
+      SPARK_WORKER_MEMORY: 2g
+      SPARK_WORKER_WEBUI_PORT: "${SPARK_UI_PORT:-8081}"
+      SPARK_LOCAL_IP: spark-worker-1
+
+  spark-worker-2:
+    build:
+      context: .
+      dockerfile: src/analysis/spark/Dockerfile
+    container_name: github_analysis_spark_worker_2
+    hostname: spark-worker-2
+    command: >
+      /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker
+      spark://spark-master:${SPARK_MASTER_PORT:-7077}
+      --cores 2
+      --memory 2g
+    depends_on:
+      - spark-master
+    networks:
+      github_network:
+        aliases:
+          - spark-worker-2
+    environment:
+      SPARK_WORKER_CORES: 2
+      SPARK_WORKER_MEMORY: 2g
+      SPARK_WORKER_WEBUI_PORT: "${SPARK_UI_PORT:-8081}"
+      SPARK_LOCAL_IP: spark-worker-2
+
+  spark-client:
+    build:
+      context: .
+      dockerfile: src/analysis/spark/Dockerfile
+    container_name: github_analysis_spark_client
+    hostname: spark-client
+    depends_on:
+      spark-master:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    networks:
+      github_network:
+        aliases:
+          - spark-client
+    environment:
+      - DATABASE_URL=jdbc:postgresql://postgres:${GITHUB_POSTGRES_PORT:-5432}/${GITHUB_POSTGRES_DB:-github_analysis}
+      - SPARK_MASTER=spark://spark-master:${SPARK_MASTER_PORT:-7077}
+      - POSTGRES_USER=${GITHUB_POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${GITHUB_POSTGRES_PASSWORD:-password}
+      - POSTGRES_DB=${GITHUB_POSTGRES_DB:-github_analysis}
+    volumes:
+      - .:/app
+    working_dir: /app
+    command: [ "bash", "-c", "spark-submit --conf spark.submit.pyFiles=/opt/spark/pure_deps.zip src/analysis/main.py"]
+
+  # Superset Services
+  superset_db:
+    image: postgres:16
+    container_name: superset_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${SUPERSET_POSTGRES_DB:-superset}
+      POSTGRES_USER: ${SUPERSET_POSTGRES_USER:-superset}
+      POSTGRES_PASSWORD: ${SUPERSET_POSTGRES_PASSWORD:-superset}
+    ports:
+      - "${SUPERSET_POSTGRES_PORT:-5444}:5432"
+    volumes:
+      - db_home:/var/lib/postgresql/data
+      - ./docker/docker-entrypoint-initdb.d:/docker-entrypoint-initdb.d
+    networks:
+      - superset_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${SUPERSET_POSTGRES_USER:-superset}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7
+    container_name: superset_cache
+    restart: unless-stopped
+    ports:
+      - "${SUPERSET_REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis:/data
+    networks:
+      - superset_network
+    command: redis-server --appendonly yes
+
+  nginx:
+    image: nginx:latest
+    container_name: superset_nginx
+    restart: unless-stopped
+    ports:
+      - "${SUPERSET_NGINX_PORT:-80}:80"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./docker/nginx/templates:/etc/nginx/templates:ro
+    networks:
+      - superset_network
+    depends_on:
+      - superset
+
+  superset:
+    image: apache/superset:latest
+    container_name: superset_app
+    command: >
+      sh -c "
+        apt update && apt install gcc -y &&
+        pip3 install psycopg2 &&
+        cp -r /usr/local/lib/python3.10/site-packages/psycopg2 /app/.venv/lib/python3.10/site-packages/ &&
+        /app/docker/docker-bootstrap.sh app
+      "
+    restart: unless-stopped
+    ports:
+      - "${SUPERSET_APP_PORT:-8088}:8088"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    user: *superset-user
+    depends_on:
+      superset-init:
+        condition: service_completed_successfully
+    volumes: *superset-volumes
+    environment:
+      # Database connection
+      DATABASE_HOST: superset_db
+      DATABASE_PORT: ${SUPERSET_POSTGRES_PORT:-5432}
+      DATABASE_USER: ${SUPERSET_POSTGRES_USER:-superset}
+      DATABASE_PASSWORD: ${SUPERSET_POSTGRES_PASSWORD:-superset}
+      DATABASE_DB: ${SUPERSET_POSTGRES_DB:-superset}
+
+      # Redis connection
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+
+      # Superset configuration
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY:-secretkey}
+      SUPERSET_LOG_LEVEL: ${SUPERSET_LOG_LEVEL:-info}
+      CYPRESS_CONFIG: "${CYPRESS_CONFIG:-}"
+      SUPERSET_LOAD_EXAMPLES: "${SUPERSET_LOAD_EXAMPLES:-yes}"
+      SUPERSET_ENABLE_PROXY_FIX: "true"
+
+      # Flask configuration
+      FLASK_APP: "superset.app:create_app()"
+      FLASK_ENV: ${SUPERSET_FLASK_ENV:-production}
+    networks:
+      - superset_network
+
+  superset-init:
+    image: apache/superset:latest
+    container_name: superset_init
+    depends_on:
+      superset_db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    user: *superset-user
+    volumes: *superset-volumes
+    environment:
+      # Database connection
+      DATABASE_HOST: superset_db
+      DATABASE_PORT: ${SUPERSET_POSTGRES_PORT:-5432}
+      DATABASE_USER: ${SUPERSET_POSTGRES_USER:-superset}
+      DATABASE_PASSWORD: ${SUPERSET_POSTGRES_PASSWORD:-superset}
+      DATABASE_DB: ${SUPERSET_POSTGRES_DB:-superset}
+
+      # Redis connection
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+
+      # Superset configuration
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY:-sprstkey}
+      SUPERSET_LOG_LEVEL: ${SUPERSET_LOG_LEVEL:-info}
+      CYPRESS_CONFIG: "${CYPRESS_CONFIG:-}"
+      SUPERSET_LOAD_EXAMPLES: "${SUPERSET_LOAD_EXAMPLES:-yes}"
+      SUPERSET_ENABLE_PROXY_FIX: "true"
+    networks:
+      - superset_network
+    command: ["/app/docker/docker-init.sh"]
+    healthcheck:
+      disable: true
+
+  superset-worker:
+    image: apache/superset:latest
+    container_name: superset_worker
+    command: ["/app/docker/docker-bootstrap.sh", "worker"]
+    environment:
+      # Database connection
+      DATABASE_HOST: superset_db
+      DATABASE_PORT: ${SUPERSET_POSTGRES_PORT:-5432}
+      DATABASE_USER: ${SUPERSET_POSTGRES_USER:-superset}
+      DATABASE_PASSWORD: ${SUPERSET_POSTGRES_PASSWORD:-superset}
+      DATABASE_DB: ${SUPERSET_POSTGRES_DB:-superset}
+
+      # Redis connection
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+
+      # Celery configuration
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      CELERYD_CONCURRENCY: ${SUPERSET_WORKER_CONCURRENCY:-2}
+
+      # Superset configuration
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY:-your-random-secret-key-change-this}
+      SUPERSET_LOG_LEVEL: ${SUPERSET_LOG_LEVEL:-info}
+      CYPRESS_CONFIG: "${CYPRESS_CONFIG:-}"
+      SUPERSET_ENABLE_PROXY_FIX: "true"
+    restart: unless-stopped
+    depends_on:
+      superset-init:
+        condition: service_completed_successfully
+    user: *superset-user
+    volumes: *superset-volumes
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A superset.tasks.celery_app:app inspect ping -d celery@$$HOSTNAME || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - superset_network
+
 volumes:
+  # GitHub Analysis volumes
   postgres_data:
     driver: local
   pgadmin_data:
     driver: local
 
+  # Superset volumes
+  superset_home:
+    external: false
+  db_home:
+    external: false
+  redis:
+    external: false
+
 networks:
   github_network:
+    driver: bridge
+  superset_network:
     driver: bridge
