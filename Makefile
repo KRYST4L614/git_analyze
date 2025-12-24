@@ -1,26 +1,41 @@
 DEFAULT_BACKUP := data/raw/dataset_raw.sql
 
-# Dataset collection
-get_dataset:
-	python src/data/main.py --token $(or $(token),$(GITHUB_TOKEN)) \
+# Full pipeline: collect + analyze
+all:
+	python src/main.py --token $(or $(token),$(GITHUB_TOKEN)) \
 	               --repos $(or $(repos),50) \
 	               --workers $(or $(workers),10) \
-	               --database-url $(or $(database_url),postgresql://postgres:password@localhost/github_analysis)
+	               --analyze-workers $(or $(analyze_workers),4) \
+	               --database-url $(or $(database_url),postgresql://postgres:password@localhost/1)
 
+# Dataset collection only
+collect:
+	python src/main.py collect --token $(or $(token),$(GITHUB_TOKEN)) \
+	               --repos $(or $(repos),50) \
+	               --workers $(or $(workers),10) \
+	               --database-url $(or $(database_url),postgresql://postgres:password@localhost/1)
+
+# Analysis only
+analyze:
+	python src/main.py analyze --database-url $(or $(database_url),postgresql://postgres:password@localhost/1) \
+	                       --workers $(or $(workers),4)
+
+# Restore database from backup
 restore:
 	bash scripts/restore_backup.sh $(or $(file),$(DEFAULT_BACKUP))
 
-analyze:
-	python src/analysis/main.py --database-url $(or $(database_url),postgresql://postgres:password@localhost/github_analysis) \
-	                       --workers $(or $(workers),4) \
-
+# Help
 help:
 	@echo "Available commands:"
-	@echo "  make get_dataset    - Collect GitHub dataset"
-	@echo "  make analyze        - Run analysis"
-	@echo "  make restore        - Restore database from backup"
+	@echo "  make all          - Run full pipeline: collect + analyze"
+	@echo "  make collect  - Collect GitHub dataset only"
+	@echo "  make analyze      - Run analysis only"
+	@echo "  make restore      - Restore database from backup"
 	@echo ""
 	@echo "Examples:"
+	@echo "  make all token=ghp_xxx repos=100 workers=10 analyze_workers=4"
 	@echo "  make get_dataset token=ghp_xxx repos=100"
 	@echo "  make analyze workers=4"
 	@echo "  make restore file=backups/custom.sql"
+
+.PHONY: all get_dataset analyze restore help
