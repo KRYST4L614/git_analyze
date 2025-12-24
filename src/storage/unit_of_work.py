@@ -43,7 +43,7 @@ class UnitOfWork:
         from src.analysis.clustering.place.models.models import Base
         Base.metadata.create_all(self.engine)
 
-    def create_analysis_tables(self):
+    def create_type_clustering_tables(self):
         from src.analysis.clustering.type.models.models import Base
         Base.metadata.create_all(self.engine)
 

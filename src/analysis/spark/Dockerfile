@@ -23,19 +23,14 @@ WORKDIR /app
 
 COPY ../../../ .
 
-# Устанавливаем ВСЕ зависимости в системный Python
 RUN pip3 install --no-cache-dir -r requirements.txt
 
-# Создаем архив ТОЛЬКО с чистыми Python модулями (без бинарных пакетов)
 RUN mkdir -p /tmp/pure_python_deps
-# Устанавливаем ТОЛЬКО чистые Python пакеты
 RUN pip3 install --target /tmp/pure_python_deps --no-cache-dir geopy cachetools requests
 
-# Копируем ВСЕ исходные файлы в архив
 RUN cp -r ./src /tmp/pure_python_deps/
 RUN cp -r ./dependencies /tmp/pure_python_deps/
 
-# Создаем архив
 RUN cd /tmp/pure_python_deps && zip -r /opt/spark/pure_deps.zip .
 
 ENV PYSPARK_PYTHON=python3

@@ -43,13 +43,6 @@ class SparkConfig:
                     "-Djava.net.preferIPv4Addresses=true "
                     "-Djava.security.egd=file:/dev/./urandom")
 
-        # Конфигурация Conda окружения
-        conda_archive = os.getenv("SPARK_CONDA_ARCHIVE", "/opt/spark/pyspark_conda_env.tar.gz")
-        if conda_archive and os.path.exists(conda_archive):
-            builder = builder \
-                .config("spark.archives", f"{conda_archive}#environment") \
-                .config("spark.yarn.dist.archives", f"{conda_archive}#environment")
-
         postgres_jar = os.getenv("SPARK_POSTGRES_JAR", "/opt/spark/jars/postgresql-42.6.0.jar")
         if postgres_jar:
             builder = builder \
