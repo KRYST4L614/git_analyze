@@ -21,7 +21,7 @@ class RepositoryType(Base):
 
 
 class RepositoryClusteringResult(Base):
-    __tablename__ = 'repository_clustering_results'
+    __tablename__ = 'repository_types_results'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     repo_id = Column(Integer, nullable=False, index=True)
